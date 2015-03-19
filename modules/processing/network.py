@@ -6,6 +6,7 @@ import os
 import re
 import struct
 import socket
+from netaddr import *
 import logging
 from urlparse import urlunparse
 
@@ -107,7 +108,7 @@ class Pcap:
             "192.0.2.0/24",
             "192.88.99.0/24",
             "192.168.0.0/16",
-            "198.18.0.0/15",
+            "198.18.0.0/15"
             "198.51.100.0/24",
             "203.0.113.0/24",
             "240.0.0.0/4",
@@ -487,6 +488,22 @@ class Pcap:
 
         return True
 
+    def makeMask(n):
+        "return a mask of n bits as a long integer"
+        return (2L<<n-1) - 1
+
+    def dottedQuadToNum(ip):
+        "convert decimal dotted quad string to long integer"
+        return struct.unpack('L',socket.inet_aton(ip))[0]
+
+    def networkMask(ip,bits):
+        "Convert a network address to a long integer" 
+        return self.dottedQuadToNum(ip) & self.makeMask(bits)
+
+    def addressInNetwork(ip,net):
+       "Is an address in a network"
+       return ip & net == net
+
     def run(self):
         """Process PCAP.
         @return: dict with network analysis data.
@@ -525,6 +542,12 @@ class Pcap:
 
         offset = file.tell()
         first_ts = None
+        
+        exclude_ips = Config().processing.exclude_ips
+        excluded_nets = None
+        if exclude_ips != None:
+            excluded_nets = [lambda x: IPNetwork(x) for x in Config().processing.exclude_ips.split(',')]
+
         for ts, buf in pcap:
             if not first_ts: first_ts = ts
 
@@ -535,6 +558,11 @@ class Pcap:
                 if isinstance(ip, dpkt.ip.IP):
                     connection["src"] = socket.inet_ntoa(ip.src)
                     connection["dst"] = socket.inet_ntoa(ip.dst)
+
+                    # Omit this entry if it is an excluded network
+                    if excluded_nets != None and any(lambda x: x.__contains(connection["src"]) or x.__contains(connection["dst"]) for x in excluded_nets):
+                        continue
+
                 elif isinstance(ip, dpkt.ip6.IP6):
                     connection["src"] = socket.inet_ntop(socket.AF_INET6,
                                                          ip.src)
@@ -635,9 +663,13 @@ def iplayer_from_raw(raw, linktype=1):
     @param raw: raw packet
     @param linktype: integer describing link type as expected by dpkt
     """
+
     if linktype == 1: # ethernet
-        pkt = dpkt.ethernet.Ethernet(raw)
-        ip = pkt.data
+        try:
+            pkt = dpkt.ethernet.Ethernet(raw)
+            ip = pkt.data
+        except:
+            return
     elif linktype == 101: # raw
         ip = dpkt.ip.IP(raw)
     else:
